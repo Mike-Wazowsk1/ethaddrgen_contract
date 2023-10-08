@@ -2,13 +2,13 @@
 extern crate clap;
 #[macro_use]
 extern crate lazy_static;
-extern crate rayon;
+extern crate num_cpus;
 extern crate rand;
+extern crate rayon;
 extern crate regex;
 extern crate secp256k1;
-extern crate tiny_keccak;
-extern crate num_cpus;
 extern crate termcolor;
+extern crate tiny_keccak;
 #[macro_use]
 extern crate generic_array;
 extern crate typenum;
@@ -17,18 +17,20 @@ extern crate typenum;
 mod macros;
 mod patterns;
 
-use patterns::{Patterns, StringPatterns, RegexPatterns};
-use std::fmt::Write;
-use std::sync::Mutex;
-use std::thread;
-use std::sync::Arc;
-use std::time::Duration;
 use clap::{Arg, ArgMatches};
+use patterns::{Patterns, RegexPatterns, StringPatterns};
 use rand::OsRng;
 use regex::Regex;
 use secp256k1::Secp256k1;
-use termcolor::{Color, ColorChoice, Buffer, BufferWriter};
+use std::fmt::Write;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::thread;
+use std::time::Duration;
+use termcolor::{Buffer, BufferWriter, Color, ColorChoice};
 use typenum::U40;
+extern crate hex;
+use hex::decode;
 
 type AddressLengthType = U40;
 
@@ -42,18 +44,19 @@ lazy_static! {
 }
 
 struct BruteforceResult {
+    contract_address: String,
     address: String,
     private_key: String,
 }
 
 fn parse_color_choice(string: &str) -> Result<ColorChoice, ()> {
     Ok(match string {
-           "always" => ColorChoice::Always,
-           "always_ansi" => ColorChoice::AlwaysAnsi,
-           "auto" => ColorChoice::Auto,
-           "never" => ColorChoice::Never,
-           _ => return Err(()),
-       })
+        "always" => ColorChoice::Always,
+        "always_ansi" => ColorChoice::AlwaysAnsi,
+        "auto" => ColorChoice::Auto,
+        "never" => ColorChoice::Never,
+        _ => return Err(()),
+    })
 }
 
 fn to_hex_string(slice: &[u8], expected_string_size: usize) -> String {
@@ -68,23 +71,33 @@ fn to_hex_string(slice: &[u8], expected_string_size: usize) -> String {
 
 fn main() {
     let matches = app_from_crate!()
-        .arg(Arg::with_name("regexp")
-             .long("regexp")
-             .short("e")
-             .help("Use regex pattern matching")
-             .long_help("By default, an address is accepted when the beginning matches one of the
+        .arg(
+            Arg::with_name("regexp")
+                .long("regexp")
+                .short("e")
+                .help("Use regex pattern matching")
+                .long_help(
+                    "By default, an address is accepted when the beginning matches one of the
 strings provided as the patterns. This flag changes the functionality from
-plain string matching to regex pattern matching."))
-        .arg(Arg::with_name("quiet")
-             .long("quiet")
-             .short("q")
-             .help("Output only the results")
-             .long_help("Output only the resulting address and private key separated by a space."))
-        .arg(Arg::with_name("color")
-             .long("color")
-             .short("c")
-             .help("Changes the color formatting strategy")
-             .long_help("Changes the color formatting strategy in the following way:
+plain string matching to regex pattern matching.",
+                ),
+        )
+        .arg(
+            Arg::with_name("quiet")
+                .long("quiet")
+                .short("q")
+                .help("Output only the results")
+                .long_help(
+                    "Output only the resulting address and private key separated by a space.",
+                ),
+        )
+        .arg(
+            Arg::with_name("color")
+                .long("color")
+                .short("c")
+                .help("Changes the color formatting strategy")
+                .long_help(
+                    "Changes the color formatting strategy in the following way:
     always      -- Try very hard to emit colors. This includes
                    emitting ANSI colors on Windows if the console
                    API is unavailable.
@@ -93,24 +106,34 @@ plain string matching to regex pattern matching."))
     auto        -- Try to use colors, but don't force the issue.
                    If the console isn't available on Windows, or
                    if TERM=dumb, for example, then don't use colors.
-    never       -- Never emit colors.\n")
-             .takes_value(true)
-             .possible_values(&["always", "always_ansi", "auto", "never"])
-             .default_value("auto"))
-        .arg(Arg::with_name("stream")
-             .long("stream")
-             .short("s")
-             .help("Keep outputting results")
-             .long_help("Instead of outputting a single result, keep outputting until terminated."))
-        .arg(Arg::with_name("PATTERN")
-             .help("The pattern to match the address against")
-             .long_help("The pattern to match the address against.
+    never       -- Never emit colors.\n",
+                )
+                .takes_value(true)
+                .possible_values(&["always", "always_ansi", "auto", "never"])
+                .default_value("auto"),
+        )
+        .arg(
+            Arg::with_name("stream")
+                .long("stream")
+                .short("s")
+                .help("Keep outputting results")
+                .long_help(
+                    "Instead of outputting a single result, keep outputting until terminated.",
+                ),
+        )
+        .arg(
+            Arg::with_name("PATTERN")
+                .help("The pattern to match the address against")
+                .long_help(
+                    "The pattern to match the address against.
 If no patterns are provided, they are read from the stdin (standard input),
 where each pattern is on a separate line.
 Addresses are outputted if the beginning matches one of these patterns.
 If the `--regexp` flag is used, the addresses are matched against these
-patterns as regex patterns, which replaces the basic string comparison.")
-             .multiple(true))
+patterns as regex patterns, which replaces the basic string comparison.",
+                )
+                .multiple(true),
+        )
         .get_matches();
 
     let quiet = matches.is_present("quiet");
@@ -128,16 +151,20 @@ patterns as regex patterns, which replaces the basic string comparison.")
     };
 }
 
-fn main_pattern_type_selected<P: Patterns + 'static>(matches: ArgMatches,
-                                                     quiet: bool,
-                                                     buffer_writer: Arc<Mutex<BufferWriter>>,
-                                                     patterns: Arc<P>) {
+fn main_pattern_type_selected<P: Patterns + 'static>(
+    matches: ArgMatches,
+    quiet: bool,
+    buffer_writer: Arc<Mutex<BufferWriter>>,
+    patterns: Arc<P>,
+) {
     if patterns.len() <= 0 {
         let mut stdout = buffer_writer.lock().unwrap().buffer();
-        cprintln!(false,
-                  stdout,
-                  Color::Red,
-                  "Please, provide at least one valid pattern.");
+        cprintln!(
+            false,
+            stdout,
+            Color::Red,
+            "Please, provide at least one valid pattern."
+        );
         buffer_writer
             .lock()
             .unwrap()
@@ -154,15 +181,19 @@ fn main_pattern_type_selected<P: Patterns + 'static>(matches: ArgMatches,
                   "---------------------------------------------------------------------------------------");
 
         if patterns.len() <= 1 {
-            cprint!(quiet,
-                    stdout,
-                    Color::White,
-                    "Looking for an address matching ");
+            cprint!(
+                quiet,
+                stdout,
+                Color::White,
+                "Looking for an address matching "
+            );
         } else {
-            cprint!(quiet,
-                    stdout,
-                    Color::White,
-                    "Looking for an address matching any of ");
+            cprint!(
+                quiet,
+                stdout,
+                Color::White,
+                "Looking for an address matching any of "
+            );
         }
 
         cprint!(quiet, stdout, Color::Cyan, "{}", patterns.len());
@@ -219,9 +250,14 @@ fn main_pattern_type_selected<P: Patterns + 'static>(matches: ArgMatches,
                     let public_key_array = &public_key.serialize_vec(&alg, false)[1..];
                     let keccak = tiny_keccak::keccak256(public_key_array);
                     let address = to_hex_string(&keccak[ADDRESS_BYTE_INDEX..], 40);  // get rid of the constant 0x04 byte
+                    let rlp = format!("d694{}80",address);
+                    let tt = decode(&rlp).unwrap();
+                    let contract_address = tiny_keccak::keccak256(&tt.as_slice());
+                    let contract_address = to_hex_string(&contract_address[ADDRESS_BYTE_INDEX..], 40);
 
-                    if patterns.contains(&address) {
+                    if patterns.contains(&contract_address) {
                         *result.lock().unwrap() = Some(BruteforceResult {
+                            contract_address,
                             address,
                             private_key: to_hex_string(&private_key[..], 64),
                         });
@@ -245,24 +281,23 @@ fn main_pattern_type_selected<P: Patterns + 'static>(matches: ArgMatches,
             let result = result.clone();
 
             thread::spawn(move || 'dance: loop {
-                              thread::sleep(Duration::from_secs(1));
+                thread::sleep(Duration::from_secs(1));
 
-                              {
-                                  let result_guard = result.lock().unwrap();
+                {
+                    let result_guard = result.lock().unwrap();
 
-                                  if let Some(_) = *result_guard {
-                                      break 'dance;
-                                  }
-                              }
+                    if let Some(_) = *result_guard {
+                        break 'dance;
+                    }
+                }
 
-                              let mut buffer = buffer_writer.lock().unwrap().buffer();
-                              let mut iterations_per_second =
-                                  iterations_this_second.lock().unwrap();
-                              cprint!(quiet, buffer, Color::Cyan, "{}", *iterations_per_second);
-                              cprintln!(quiet, buffer, Color::White, " addresses / second");
-                              *sync_buffer.lock().unwrap() = Some(buffer);
-                              *iterations_per_second = 0;
-                          });
+                let mut buffer = buffer_writer.lock().unwrap().buffer();
+                let mut iterations_per_second = iterations_this_second.lock().unwrap();
+                cprint!(quiet, buffer, Color::Cyan, "{}", *iterations_per_second);
+                cprintln!(quiet, buffer, Color::White, " addresses / second");
+                *sync_buffer.lock().unwrap() = Some(buffer);
+                *iterations_per_second = 0;
+            });
         }
 
         'dance: loop {
@@ -296,14 +331,18 @@ fn main_pattern_type_selected<P: Patterns + 'static>(matches: ArgMatches,
                       stdout,
                       Color::White,
                       "---------------------------------------------------------------------------------------");
+            cprint!(quiet, stdout, Color::White, "Found SmartContract address: ");
+            cprintln!(quiet, stdout, Color::Cyan, "0x{}", result.contract_address);
             cprint!(quiet, stdout, Color::White, "Found address: ");
             cprintln!(quiet, stdout, Color::Yellow, "0x{}", result.address);
             cprint!(quiet, stdout, Color::White, "Generated private key: ");
             cprintln!(quiet, stdout, Color::Red, "{}", result.private_key);
-            cprintln!(quiet,
-                      stdout,
-                      Color::White,
-                      "Import this private key into an ethereum wallet in order to use the address.");
+            cprintln!(
+                quiet,
+                stdout,
+                Color::White,
+                "Import this private key into an ethereum wallet in order to use the address."
+            );
             cprintln!(quiet,
                       stdout,
                       Color::Green,
